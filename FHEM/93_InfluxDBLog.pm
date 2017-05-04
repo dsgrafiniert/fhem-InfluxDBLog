@@ -5,7 +5,6 @@ package main;
 use strict;
 use warnings;
 use InfluxDB::HTTP;
-use Blocking;
 
 #####################################
 sub
@@ -26,7 +25,6 @@ InfluxDBLog_Initialize($)
     readySuffix
     syncAfterWrite:1,0
     template:textField-long
-    writeInBackground:1,0
   );
   use warnings 'qw';
   $hash->{AttrList} = join(" ", @attrList);
@@ -41,20 +39,20 @@ InfluxDBLog_Define($@)
   my @a = split("[ \t][ \t]*", $def);
   my $fh;
 
-  return "wrong syntax: define <name> InfluxDBLog filename regexp"
-        if(int(@a) != 4);
+  return "wrong syntax: define <name> InfluxDBLog InfluxDBServer InfluxDBPort regexp"
+        if(int(@a) != 5);
 
   return "Bad regexp: starting with *" if($a[3] =~ m/^\*/);
   eval { "Hallo" =~ m/^$a[3]$/ };
   return "Bad regexp: $@" if($@);
 
   $hash->{FH} = $fh;
-  $hash->{REGEXP} = $a[3];
-  $hash->{LOGFILE} =
-                ($a[2] =~ m/^{.*}$/ ? AnalyzePerlCommand(undef, $a[2]) : $a[2]);
+  $hash->{REGEXP} = $a[4];
+  $hash->{INFLUXSRV} = $a[2];
+  $hash->{INFLUXPORT} = int($a[3]);
   $hash->{STATE} = "active";
   readingsSingleUpdate($hash, "filecount", 0, 0);
-  notifyRegexpChanged($hash, $a[3]);
+  notifyRegexpChanged($hash, $a[4]);
 
   return undef;
 }
@@ -88,11 +86,9 @@ InfluxDBLog_Log($$)
       readingsSingleUpdate($log, "filecount", $fc, 0);
 
       my %arg = (log=>$log, dev=>$dev, evt=>$s);
-      if(AttrVal($ln, "writeInBackground",0)) {
-        BlockingCall("InfluxDBLog_Write", \%arg);
-      } else {
+      
         InfluxDBLog_Write(\%arg);
-      }
+      
     }
   }
   return "";
@@ -238,11 +234,6 @@ InfluxDBLog_Attr(@)
       expression, and its result is written to the file.<br>
       Default is $time $NAME $EVENT\n
     </li><br>
-
-    <li><a name="#writeInBackground">writeInBackground</a><br>
-      if set (to 1), the writing will occur in a background process to avoid
-      blocking FHEM. Default is 0.
-    </li><br>
   </ul>
   <br>
 </ul>
@@ -312,12 +303,6 @@ InfluxDBLog_Attr(@)
       Falls template in {} eingeschlossen ist, dann wird er als perl-Ausdruck
       ausgefuehrt, und das Ergebnis wird in die Datei geschrieben.<br>
       Die Voreinstellung ist $time $NAME $EVENT\n
-    </li><br>
-
-    <li><a name="#writeInBackground">writeInBackground</a><br>
-      falls gesetzt (auf 1), dann erfolgt das Schreiben in einem
-      Hintergrundprozess, um FHEM nicht zu blockieren. Die Voreinstellung ist 0
-      (aus).
     </li><br>
   </ul>
   <br>
