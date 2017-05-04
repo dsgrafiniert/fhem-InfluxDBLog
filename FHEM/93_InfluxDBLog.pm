@@ -4,7 +4,7 @@ package main;
 
 use strict;
 use warnings;
-use InfluxDB::HTTP;
+use LWP::UserAgent;
 
 #####################################
 sub
@@ -18,14 +18,14 @@ InfluxDBLog_Initialize($)
 
   no warnings 'qw';
   my @attrList = qw(
-    addStateEvent:1,0
-    disable:1,0
-    disabledForIntervals
-    numberFormat
-    readySuffix
-    syncAfterWrite:1,0
-    template:textField-long
-  );
+      addStateEvent:1,0
+          disable:1,0
+          disabledForIntervals
+          numberFormat
+          readySuffix
+          syncAfterWrite:1,0
+          template:textField-long
+      );
   use warnings 'qw';
   $hash->{AttrList} = join(" ", @attrList);
 }
@@ -39,20 +39,22 @@ InfluxDBLog_Define($@)
   my @a = split("[ \t][ \t]*", $def);
   my $fh;
 
-  return "wrong syntax: define <name> InfluxDBLog InfluxDBServer InfluxDBPort regexp"
-        if(int(@a) != 5);
+  return "wrong syntax: define <name> InfluxDBLog InfluxDBServer InfluxDBPort InfluxDatabase regexp"
+      if(int(@a) != 6);
 
-  return "Bad regexp: starting with *" if($a[3] =~ m/^\*/);
-  eval { "Hallo" =~ m/^$a[3]$/ };
+  return "Bad regexp: starting with *" if($a[5] =~ m/^\*/);
+  eval { "Hallo" =~ m/^$a[5]$/ };
   return "Bad regexp: $@" if($@);
 
   $hash->{FH} = $fh;
-  $hash->{REGEXP} = $a[4];
+  $hash->{REGEXP} = $a[5];
   $hash->{INFLUXSRV} = $a[2];
   $hash->{INFLUXPORT} = int($a[3]);
+  $hash->{INFLUXDB} = $a[4];
   $hash->{STATE} = "active";
   readingsSingleUpdate($hash, "filecount", 0, 0);
-  notifyRegexpChanged($hash, $a[4]);
+  notifyRegexpChanged($hash, $a[5]);
+    Log3 $hash->{NAME}, 4, "$hash->{NAME}: Initialized";
 
   return undef;
 }
@@ -65,9 +67,12 @@ InfluxDBLog_Log($$)
   # Log is my entry, Dev is the entry of the changed device
   my ($log, $dev) = @_;
   return if($log->{READONLY});
+    Log3 $log->{NAME}, 4, "$log->{NAME}: Log";
 
   my $ln = $log->{NAME};
-  return if(IsDisabled($ln));
+    Log3 $log->{NAME}, 4, "$log->{NAME}: 73";
+
+    return if(IsDisabled($ln));
   my $events = deviceEvents($dev, AttrVal($ln, "addStateEvent", 0));
   return if(!$events);
 
@@ -86,12 +91,14 @@ InfluxDBLog_Log($$)
       readingsSingleUpdate($log, "filecount", $fc, 0);
 
       my %arg = (log=>$log, dev=>$dev, evt=>$s);
-      
-        InfluxDBLog_Write(\%arg);
-      
+
+      InfluxDBLog_Write(\%arg);
+
     }
   }
-  return "";
+    Log3 $log->{NAME}, 4, "$log->{NAME}: Log End";
+
+    return "";
 }
 
 ###################################
@@ -114,7 +121,7 @@ InfluxDBLog_Write($)
 
   my $time = $dev->{NTFY_TRIGGERTIME};
   my $time14 = sprintf("%04d%02d%02d%02d%02d%02d",
-                  $time[5]+1900,$time[4]+1,$time[3],$time[2],$time[1],$time[0]);
+      $time[5]+1900,$time[4]+1,$time[3],$time[2],$time[1],$time[0]);
   my $time16 = $time14.sprintf("%02d", $microseconds/100000);
   my ($decl,$idx) = ("",0);
   my $nf = AttrVal($ln, "numberFormat", "%1.6E");
@@ -133,17 +140,29 @@ InfluxDBLog_Write($)
     Log3 $ln, 1, "$ln: error evaluating template: $@";
     return;
   }
-  $data =~ s/\n/\r\n/mg if(AttrVal($ln, "dosLineEnding", 0));
 
-  my $fh = new IO::File ">>$f.tmp";
-  if(!defined($fh)) {
-    Log3 $ln, 1, "$ln: Can't open $f.tmp: $!";
-    return;
+  Log3 $ln, 4, "$ln: Writing $data";
+
+  my $uri = URI->new();
+
+  $uri->scheme('http');
+  $uri->host($log->{INFLUXSRV});
+  $uri->port($log->{INFLUXPORT});
+  $uri->path('write');
+  $uri->query_form(db => $log->{INFLUXDB}) if (defined $log->{INFLUXDB});
+
+  my $lwp_user_agent = LWP::UserAgent->new();
+  $lwp_user_agent->agent("FHEMInfluxDB-HTTP/0.01");
+  my $response = $lwp_user_agent->post($uri->canonical(), Content => $data);
+
+  if ($response->code() != 204) {
+    my $error = $response->message();
+    Log3 $ln, 4, "$ln: Error $error";
+
+
   }
-  print $fh $data;
-  $fh->sync if($^O ne 'MSWin32' && AttrVal($ln, "syncAfterWrite", 0));
-  close($fh);
 
+  return;
 
 }
 
