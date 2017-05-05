@@ -5,6 +5,7 @@ package main;
 use strict;
 use warnings;
 use LWP::UserAgent;
+use Time::Piece;
 
 #####################################
 sub
@@ -21,10 +22,6 @@ InfluxDBLog_Initialize($)
       addStateEvent:1,0
           disable:1,0
           disabledForIntervals
-          numberFormat
-          readySuffix
-          syncAfterWrite:1,0
-          template:textField-long
       );
   use warnings 'qw';
   $hash->{AttrList} = join(" ", @attrList);
@@ -39,22 +36,24 @@ InfluxDBLog_Define($@)
   my @a = split("[ \t][ \t]*", $def);
   my $fh;
 
-  return "wrong syntax: define <name> InfluxDBLog InfluxDBServer InfluxDBPort InfluxDatabase regexp"
-      if(int(@a) != 6);
+  return "wrong syntax: define <name> InfluxDBLog InfluxDBServer InfluxDBPort InfluxDatabase Username Password regexp"
+      if(int(@a) != 8);
 
   return "Bad regexp: starting with *" if($a[5] =~ m/^\*/);
   eval { "Hallo" =~ m/^$a[5]$/ };
   return "Bad regexp: $@" if($@);
 
   $hash->{FH} = $fh;
-  $hash->{REGEXP} = $a[5];
+  $hash->{REGEXP} = $a[7];
   $hash->{INFLUXSRV} = $a[2];
   $hash->{INFLUXPORT} = int($a[3]);
   $hash->{INFLUXDB} = $a[4];
+  $hash->{INFLUXUSER} = $a[5];
+  $hash->{INFLUXPW} = $a[6];
   $hash->{STATE} = "active";
   readingsSingleUpdate($hash, "filecount", 0, 0);
-  notifyRegexpChanged($hash, $a[5]);
-    Log3 $hash->{NAME}, 4, "$hash->{NAME}: Initialized";
+  notifyRegexpChanged($hash, $a[7]);
+  Log3 $hash->{NAME}, 4, "$hash->{NAME}: Initialized";
 
   return undef;
 }
@@ -67,12 +66,12 @@ InfluxDBLog_Log($$)
   # Log is my entry, Dev is the entry of the changed device
   my ($log, $dev) = @_;
   return if($log->{READONLY});
-    Log3 $log->{NAME}, 4, "$log->{NAME}: Log";
+  Log3 $log->{NAME}, 4, "$log->{NAME}: Log";
 
   my $ln = $log->{NAME};
-    Log3 $log->{NAME}, 4, "$log->{NAME}: 73";
+  Log3 $log->{NAME}, 4, "$log->{NAME}: 73";
 
-    return if(IsDisabled($ln));
+  return if(IsDisabled($ln));
   my $events = deviceEvents($dev, AttrVal($ln, "addStateEvent", 0));
   return if(!$events);
 
@@ -87,8 +86,6 @@ InfluxDBLog_Log($$)
     $s = "" if(!defined($s));
     my $t = (($ct && $ct->[$i]) ? $ct->[$i] : $tn);
     if($n =~ m/^$re$/ || "$n:$s" =~ m/^$re$/ || "$t:$n:$s" =~ m/^$re$/) {
-      my $fc = ReadingsVal($ln,"filecount",0)+1;
-      readingsSingleUpdate($log, "filecount", $fc, 0);
 
       my %arg = (log=>$log, dev=>$dev, evt=>$s);
 
@@ -96,9 +93,9 @@ InfluxDBLog_Log($$)
 
     }
   }
-    Log3 $log->{NAME}, 4, "$log->{NAME}: Log End";
+  Log3 $log->{NAME}, 4, "$log->{NAME}: Log End";
 
-    return "";
+  return "";
 }
 
 ###################################
@@ -110,36 +107,11 @@ InfluxDBLog_Write($)
   my $NAME = $dev->{NAME};
 
   my $ln = $log->{NAME};
-  my ($seconds, $microseconds) = gettimeofday();
 
-  my @time = localtime($seconds);
-  my $f = $log->{LOGFILE};
-  my $fc = ReadingsVal($ln,"filecount",0);
-  $f =~ s/%Q/$fc/g;
-  $f = ResolveDateWildcards($f, @time);
-  Log3 $ln, 4, "$ln: Writing $f";
+  my @arr = split(": ", $EVENT);
+  return if (int(@arr) != 2);
 
-  my $time = $dev->{NTFY_TRIGGERTIME};
-  my $time14 = sprintf("%04d%02d%02d%02d%02d%02d",
-      $time[5]+1900,$time[4]+1,$time[3],$time[2],$time[1],$time[0]);
-  my $time16 = $time14.sprintf("%02d", $microseconds/100000);
-  my ($decl,$idx) = ("",0);
-  my $nf = AttrVal($ln, "numberFormat", "%1.6E");
-  foreach my $part (split(" ", $EVENT)) {
-    $decl .= "my \$EVTPART$idx='$part';";
-    $decl .= "my \$EVTNUM$idx='".sprintf($nf,$part)."';"
-        if(looks_like_number($part));
-    $idx++;
-  }
-
-  my $template = AttrVal($ln, "template", '$time $NAME $EVENT\n');
-  $template = "\"$template\"" if($template !~ m/^{.*}$/);
-
-  my $data = eval "$decl $template";
-  if($@) {
-    Log3 $ln, 1, "$ln: error evaluating template: $@";
-    return;
-  }
+  my $data = "$arr[0],site_name=$NAME value=$arr[1]";
 
   Log3 $ln, 4, "$ln: Writing $data";
 
@@ -149,17 +121,17 @@ InfluxDBLog_Write($)
   $uri->host($log->{INFLUXSRV});
   $uri->port($log->{INFLUXPORT});
   $uri->path('write');
-  $uri->query_form(db => $log->{INFLUXDB}) if (defined $log->{INFLUXDB});
+  $uri->query_form(db => $log->{INFLUXDB}, u => $log->{INFLUXUSER}, p=> $log->{INFLUXPW}) if (defined $log->{INFLUXDB});
 
+  Log3 $ln, 4, "$ln: URI: $uri";
   my $lwp_user_agent = LWP::UserAgent->new();
   $lwp_user_agent->agent("FHEMInfluxDB-HTTP/0.01");
   my $response = $lwp_user_agent->post($uri->canonical(), Content => $data);
 
   if ($response->code() != 204) {
     my $error = $response->message();
-    Log3 $ln, 4, "$ln: Error $error";
-
-
+    my $errorcode = $response->code();
+    Log3 $ln, 4, "$ln: Error $errorcode $error";
   }
 
   return;
@@ -200,59 +172,19 @@ InfluxDBLog_Attr(@)
   <a name="InfluxDBLogdefine"></a>
   <b>Define</b>
   <ul>
-    <code>define &lt;name&gt; InfluxDBLog &lt;filename&gt; &lt;regexp&gt;
+    <code>define &lt;name&gt; InfluxDBLog &lt;InfluxDBServer&gt; &lt;InfluxDBPort&gt; &lt;InfluxDatabase&gt; &lt;Username&gt; &lt;Password&gt; &lt;regexp&gt;
     </code>
     <br><br>
-    For each event or devicename:event matching the &lt;regexp&gt; create a
-    new file &lt;filename&gt;<br>
-    <code>&lt;filename&gt;</code> may contain %-wildcards of the
-    POSIX strftime function of the underlying OS (see your strftime manual),
-    additionally %Q is replaced with a sequential number unique to the
-    InfluxDBLog device. The file content is based on the template attribute,
-    see below.<br>
-    If the filename is enclosed in {} then it is evaluated as a perl expression,
-    which can be used to use a global path different from %L.
+    Posts numeric Events to an InfluxDB instance.
   </ul>
   <br>
-
-  <a name="InfluxDBLogset"></a>
-  <b>Set</b> <ul>N/A</ul><br>
-
-  <a name="InfluxDBLogget"></a>
-  <b>Get</b> <ul>N/A</ul><br>
 
   <a name="InfluxDBLogattr"></a>
   <b>Attributes</b>
   <ul>
-    <li><a href="#addStateEvent">addStateEvent</a></li><br>
     <li><a href="#disable">disable</a></li>
     <li><a href="#disabledForIntervals">disabledForIntervals</a></li><br>
 
-
-    <li><a name="#numberFormat">numberFormat</a><br>
-      If a word in the event looks like a number, then it is reformatted using
-      the numberFormat, and $EVTNUMx is set (analogue to $EVTPARx). Default is
-      %1.6E, see the printf manual for details.
-    </li><br>
-
-    <li><a name="#template">template</a><br>
-      This attribute specifies the content of the file. Following variables
-      are replaced before writing the file:
-      <ul>
-        <li>$EVENT - the complete event</li>
-        <li>$EVTPART0 $EVTPART1 ... - the event broken into single words</li>
-        <li>$EVTNUM0 $EVTNUM1 ... - reformatted as numbers, see numberFormat
-            above</li>
-        <li>$NAME - the name of the device generating the event</li>
-        <li>$time - the current time, formatted as YYYY-MM-DD HH:MM:SS</li>
-        <li>$time14 - the current time, formatted as YYYYMMDDHHMMSS</li>
-        <li>$time16 - the current time, formatted as YYYYMMDDHHMMSSCC,
-            where CC is the hundredth second</li>
-      </ul>
-      If the template is enclosed in {} than it will be evaluated as a perl
-      expression, and its result is written to the file.<br>
-      Default is $time $NAME $EVENT\n
-    </li><br>
   </ul>
   <br>
 </ul>
@@ -269,60 +201,22 @@ InfluxDBLog_Attr(@)
   <a name="InfluxDBLogdefine"></a>
   <b>Define</b>
   <ul>
-    <code>define &lt;name&gt; InfluxDBLog &lt;filename&gt; &lt;regexp&gt;
+    <code>define &lt;name&gt; InfluxDBLog &lt;InfluxDBServer&gt; &lt;InfluxDBPort&gt; &lt;InfluxDatabase&gt; &lt;Username&gt; &lt;Password&gt; &lt;regexp&gt;
     </code>
     <br><br>
     F&uuml; jedes Event oder Ger&auml;tename:Event, worauf &lt;regexp&gt;
-    zutrifft, wird eine separate Datei angelegt, der Inhalt wird von dem
-    template Attribut gesteuert (s.u.).
-    <code>&lt;filename&gt;</code> kann %-Wildcards der POSIX strftime-Funktion
-    des darunterliegenden OS enthalten (siehe auch man strftime).
-    Zus&auml;tzlich wird %Q durch eine fortlaufende Zahl ersetzt.<br>
-    Falls filename in {} eingeschlossen ist, dann wird sie als perl-Ausdruck
-    ausgewertet, was erm&ouml;glicht einen vom %L abweichenden globalem Pfad zu
-    definieren.
+    zutrifft, werden numerische Readings an die angegebene InfluxDB Instanz gesendet.
   </ul>
   <br>
-
-  <a name="InfluxDBLogset"></a>
-  <b>Set</b> <ul>N/A</ul><br>
-
-  <a name="InfluxDBLogget"></a>
-  <b>Get</b> <ul>N/A</ul><br>
 
   <a name="InfluxDBLogattr"></a>
   <b>Attribute</b>
   <ul>
-    <li><a href="#addStateEvent">addStateEvent</a></li><br>
     <li><a href="#disable">disable</a></li>
     <li><a href="#disabledForIntervals">disabledForIntervals</a></li><br>
 
 
-    <li><a name="#numberFormat">numberFormat</a><br>
-      Falls ein Wort im Event wie eine Zahl aussieht, dann wird es wie in
-      numberFormat angegeben, umformatiert, und als $EVTNUMx (analog zu
-      $EVTPARTx) zur Verf&uuml;gung gestellt. Voreinstellung ist %1.6E, siehe
-      die printf Formatbeschreibung f&uuml;r Details.
-    </li><br>
 
-    <li><a name="#template">template</a><br>
-      Damit wird der Inhalt der geschriebenen Datei spezifiziert. Folgende
-      Variablen werden vor dem Schreiben der Datei ersetzt:
-      <ul>
-        <li>$EVENT - das vollst&auml;ndige Event.</li>
-        <li>$EVTPART0 $EVTPART1 ... - die einzelnen W&ouml;rter des Events.</li>
-        <li>$EVTNUM0 $EVTNUM1 ... - umformatiert als Zahl, siehe numberFormat
-            weiter oben.</li>
-        <li>$NAME - der Name des Ger&auml;tes, das das Event generiert.</li>
-        <li>$time - die aktuelle Zeit, formatiert als YYYY-MM-DD HH:MM:SS</li>
-        <li>$time14 - die aktuelle Zeit, formatiert als YYYYMMDDHHMMSS</li>
-        <li>$time16 - die aktuelle Zeit, formatiert als YYYYMMDDHHMMSSCC,
-            wobei CC die hundertstel Sekunde ist</li>
-      </ul>
-      Falls template in {} eingeschlossen ist, dann wird er als perl-Ausdruck
-      ausgefuehrt, und das Ergebnis wird in die Datei geschrieben.<br>
-      Die Voreinstellung ist $time $NAME $EVENT\n
-    </li><br>
   </ul>
   <br>
 </ul>
