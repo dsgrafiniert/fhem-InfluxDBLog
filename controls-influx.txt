@@ -1,2 +1,0 @@
-DEL FHEM/93_InfluxDBLog.pm
-UPD 2017-05-05_11:37:00 5373 FHEM/93_InfluxDBLog.pm
